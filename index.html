@@ -8,22 +8,44 @@
     />
     <meta
       name="description"
-      content="Harshal Abhyankar (Omniwot) — ML engineer and full-stack developer. Portfolio of work, projects, and experience."
+      content="Harshal V. Abhyankar — AI engineer in Charlotte, NC, building agentic systems and RAG pipelines that ship to production. Experience, projects, and skills."
     />
-    <meta property="og:title" content="Omniwot | Harshal Abhyankar" />
+    <meta property="og:title" content="Harshal Abhyankar — AI Engineer" />
+    <meta
+      property="og:description"
+      content="AI engineer building agentic systems and retrieval pipelines that ship to production. Forward-deployed AI · Charlotte, NC."
+    />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://omniwot.github.io/" />
-    <meta name="theme-color" content="#070B0A" />
+    <meta name="theme-color" content="#ffffff" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Share+Tech+Mono&display=swap"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600;700&family=Share+Tech+Mono&display=swap"
       rel="stylesheet"
     />
-    <title>Omniwot | Harshal Abhyankar</title>
-    <script type="module" crossorigin src="/assets/index-D9-Fz3ai.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-pKVIoIJg.css">
+    <title>Harshal Abhyankar — AI Engineer</title>
+    <script>
+      // Resolve the saved theme before first paint so the page never flashes
+      // white on its way into the Matrix theme (or vice versa).
+      (function () {
+        try {
+          var saved = localStorage.getItem("portfolio:mode");
+          var mode = saved === "matrix" || saved === "pro" ? saved : "pro";
+          document.documentElement.dataset.mode = mode;
+          if (mode === "matrix") {
+            document
+              .querySelector('meta[name="theme-color"]')
+              .setAttribute("content", "#070B0A");
+          }
+        } catch (e) {
+          document.documentElement.dataset.mode = "pro";
+        }
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-n5NIe8-h.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-7MmcEaXT.css">
   </head>
   <body>
     <div id="root"></div>
