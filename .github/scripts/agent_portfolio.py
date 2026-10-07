@@ -159,11 +159,14 @@ def holdings_from_table(html: str) -> dict[str, tuple[float, float]] | None:
 def parse(email: dict) -> dict:
     head = headline(email)
     hold = holdings_from_state(email) or holdings_from_table(email.get("html", ""))
+    # Diagnostic, safe for public logs: row count and a ratio, never amounts or symbols.
+    why = "ok" if hold else "no-table"
     if hold and head:
-        total = sum(q * p for q, p in hold.values())
-        if abs(total / head[0] - 1) > RECONCILE_TOL:
+        ratio = sum(q * p for q, p in hold.values()) / head[0]
+        if abs(ratio - 1) > RECONCILE_TOL:
+            why = f"reconcile ratio={ratio:.3f} rows={len(hold)}"
             hold = None  # table didn't reconcile with the headline; don't trust it
-    return {"head": head, "hold": hold}
+    return {"head": head, "hold": hold, "why": why if head else why + " no-headline"}
 
 
 def price_date(ts: str) -> date:
@@ -225,6 +228,8 @@ def build(emails: list[dict]) -> dict:
     for prev, cur in zip(days, days[1:]):
         r, how = day_return(by_day[prev], by_day[cur])
         stats[how] += 1
+        if how == "unresolved":
+            print(f"unresolved {cur}: prev[{by_day[prev]['why']}] cur[{by_day[cur]['why']}]")
         if r is None:
             r = 0.0
         elif abs(r) > MAX_DAILY_MOVE:
