@@ -117,7 +117,7 @@ def holdings_from_table(html: str) -> dict[str, tuple[float, float]] | None:
 
     Formats seen: "27 sh · avg ₹959.58 · LTP ₹1,303.10", "86 @ ₹416.45 · ₹383.10",
     and a bare "₹404.35" — the price is always the last rupee figure in the symbol
-    cell; quantity is explicit or recovered as value / price.
+    cell, but candidates are checked against the row value (see _consistent).
     """
     for table in re.findall(r"<table.*?</table>", html, re.S | re.I):
         rows = re.findall(r"<tr.*?</tr>", table, re.S | re.I)
@@ -140,22 +140,39 @@ def holdings_from_table(html: str) -> dict[str, tuple[float, float]] | None:
             if not SYMBOL_RE.match(symbol):
                 continue
             first = _plain(cells[0])
-            prices = RUPEE_RE.findall(cells[pcol] if pcol is not None and pcol < len(cells) else first)
+            price_cell = _plain(cells[pcol]) if pcol is not None and pcol < len(cells) else first
+            candidates = [_num(x) for x in RUPEE_RE.findall(price_cell)][::-1]  # LTP is usually last
             vals = RUPEE_RE.findall(_plain(cells[vcol])) or re.findall(AMOUNT, _plain(cells[vcol]))
-            if not prices or not vals:
+            if not candidates or not vals:
                 continue
-            price, value = _num(prices[-1]), _num(vals[0])
-            if price <= 0 or value <= 0:
-                continue
-            # An explicit "N sh" / "N @" wins only if it agrees with value / price:
-            # action notes in the same cell ("sell 4 sh") must not become the quantity.
-            implied = round(value / price)
-            explicit = [int(n) for n in QTY_RE.findall(first)]
-            qty = next((float(n) for n in explicit if implied and abs(n / implied - 1) < 0.02), float(implied))
-            if qty > 0:
-                out[symbol] = (qty, price)
+            value = _num(vals[0])
+            fix = _consistent(value, candidates, [int(n) for n in QTY_RE.findall(first)])
+            if fix:
+                out[symbol] = fix
         if out:
             return out
+    return None
+
+
+def _consistent(value: float, prices: list[float], stated: list[int]) -> tuple[float, float] | None:
+    """Pick (qty, price) such that qty * price reproduces the row's value.
+
+    The agent computes value = qty * LTP, so the true LTP divides the value into
+    whole shares; a stop level or average cost almost never does. A stated
+    quantity is preferred; otherwise the quantity is recovered from the value.
+    Rows with no consistent pair are dropped, which then fails reconciliation.
+    """
+    if value <= 0:
+        return None
+    tol = max(2.0, 0.0005 * value)
+    for p in prices:
+        for q in stated:
+            if q > 0 and p > 0 and abs(q * p - value) <= tol:
+                return float(q), p
+    for p in prices:
+        n = round(value / p) if p > 0 else 0
+        if n >= 1 and abs(n * p - value) <= tol:
+            return float(n), p
     return None
 
 
@@ -202,7 +219,8 @@ def close_on(closes: dict[date, float], d: date) -> float | None:
 def day_return(prev: dict, cur: dict) -> tuple[float | None, str]:
     a, b = prev["hold"], cur["hold"]
     if a and b:
-        common = [s for s in a if s in b]
+        # Beyond NSE's 20% circuit band a one-day move is a bad price, not a market move.
+        common = [s for s in a if s in b and abs(b[s][1] / a[s][1] - 1) <= 0.20]
         base = sum(a[s][0] * a[s][1] for s in common)
         if base > 0:
             return sum(a[s][0] * (b[s][1] - a[s][1]) for s in common) / base, "holdings"
