@@ -1,15 +1,18 @@
 """Publish percent-change-only stats for the nightly Claude portfolio run.
 
-Reads every "Portfolio Review" email from the AgentMail inbox, reduces each to
-(portfolio value, cost basis), and writes agent-portfolio.json containing only
-percentages and dates. Rupee amounts, symbols, and recommendations never leave
-this process, and nothing from an email body is ever printed: this runs in a
-public repo, so its logs are public.
+Reads every "Portfolio Review" email from the AgentMail inbox and writes
+agent-portfolio.json containing only percentages and dates. Rupee amounts,
+symbols, and recommendations never leave this process, and nothing from an
+email body is ever printed: this runs in a public repo, so its logs are public.
 
-Return method: time-weighted. A day's return strips out new money by treating
-the change in cost basis as the cash flow, so buying more shares doesn't read
-as a gain. Sells are approximated at cost, which is close enough for a
-percent-change card and far better than raw P&L-on-cost.
+Return method: each day's return is yesterday's holdings priced at today's
+prices — sum(q_prev * (p_today - p_prev)) / sum(q_prev * p_prev) over symbols
+held on both days. Buys, sells and new money therefore can't masquerade as
+performance (an earlier cost-basis method booked every profitable sale as a
+loss). Holdings come from the STATE block when present, else from the
+email's holdings table. If neither day parses, a day with an unchanged cost
+basis falls back to the headline value change (exact when nothing traded);
+otherwise the day is left flat and counted as unresolved.
 
 Usage:
   AGENTMAIL_API_KEY=... python agent_portfolio.py agent-portfolio.json
@@ -33,11 +36,16 @@ SUBJECT = "Portfolio Review"
 IST = timezone(timedelta(hours=5, minutes=30))
 # A single day moving more than this is a parse error, not a market move.
 MAX_DAILY_MOVE = 0.15
+# Parsed holdings must sum to within this of the headline value to be trusted.
+RECONCILE_TOL = 0.03
 
 STATE_RE = re.compile(r"PORTFOLIO_STATE\s*(\{.*?\})\s*PORTFOLIO_STATE", re.S)
 AMOUNT = r"([\d,]+(?:\.\d+)?)"
 VALUE_RE = re.compile(r"Portfolio[^₹\d]{0,40}₹\s?" + AMOUNT)
 PNL_RE = re.compile(r"P&L[^₹]{0,40}?([+\-−–])\s?₹\s?" + AMOUNT)
+RUPEE_RE = re.compile(r"₹\s?" + AMOUNT)
+QTY_RE = re.compile(r"\b(\d+)\s*(?:sh\b|@)")
+SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9&\-]{1,19}$")
 
 
 def _get(url: str, headers: dict[str, str] | None = None) -> dict:
@@ -70,23 +78,14 @@ def _num(s: str) -> float:
     return float(s.replace(",", ""))
 
 
-def value_and_cost(email: dict) -> tuple[float, float] | None:
-    """(value, cost) from the STATE block when present, else from the headline."""
-    for body in (email.get("text", ""), email.get("html", "")):
-        m = STATE_RE.search(body)
-        if not m:
-            continue
-        try:
-            holdings = json.loads(htmlmod.unescape(m.group(1)))["holdings"]
-            value = sum(h["qty"] * h["ltp"] for h in holdings)
-            cost = sum(h["qty"] * h["avg"] for h in holdings)
-            if value > 0 and cost > 0:
-                return value, cost
-        except (ValueError, KeyError, TypeError):
-            pass
+def _plain(fragment: str) -> str:
+    text = htmlmod.unescape(re.sub(r"<[^>]+>", " ", fragment))
+    return re.sub(r"\s+", " ", text).strip()
 
-    plain = htmlmod.unescape(re.sub(r"<[^>]+>", " ", email.get("html") or email.get("text", "")))
-    plain = re.sub(r"\s+", " ", plain)
+
+def headline(email: dict) -> tuple[float, float] | None:
+    """(value, cost) from the headline sentence."""
+    plain = _plain(email.get("html") or email.get("text", ""))
     v = VALUE_RE.search(plain)
     if not v:
         return None
@@ -94,9 +93,77 @@ def value_and_cost(email: dict) -> tuple[float, float] | None:
     if not p:
         return None
     value = _num(v.group(1))
-    pnl = _num(p.group(2)) * (1 if p.group(1) == "+" else -1)
-    cost = value - pnl
+    cost = value - _num(p.group(2)) * (1 if p.group(1) == "+" else -1)
     return (value, cost) if value > 0 and cost > 0 else None
+
+
+def holdings_from_state(email: dict) -> dict[str, tuple[float, float]] | None:
+    for body in (email.get("text", ""), email.get("html", "")):
+        m = STATE_RE.search(body)
+        if not m:
+            continue
+        try:
+            rows = json.loads(htmlmod.unescape(m.group(1)))["holdings"]
+            out = {h["symbol"]: (float(h["qty"]), float(h["ltp"])) for h in rows}
+            if out and all(q > 0 and p > 0 for q, p in out.values()):
+                return out
+        except (ValueError, KeyError, TypeError):
+            pass
+    return None
+
+
+def holdings_from_table(html: str) -> dict[str, tuple[float, float]] | None:
+    """Symbol -> (qty, price) from the first table with a Symbol and a Value column.
+
+    Formats seen: "27 sh · avg ₹959.58 · LTP ₹1,303.10", "86 @ ₹416.45 · ₹383.10",
+    and a bare "₹404.35" — the price is always the last rupee figure in the symbol
+    cell; quantity is explicit or recovered as value / price.
+    """
+    for table in re.findall(r"<table.*?</table>", html, re.S | re.I):
+        rows = re.findall(r"<tr.*?</tr>", table, re.S | re.I)
+        if not rows:
+            continue
+        header = [_plain(c).lower() for c in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", rows[0], re.S | re.I)]
+        if not header or "symbol" not in header[0]:
+            continue
+        vcol = next((i for i, h in enumerate(header) if h.startswith("value")), None)
+        pcol = next((i for i, h in enumerate(header) if "ltp" in h or "price" in h), None)
+        if vcol is None:
+            continue
+        out = {}
+        for row in rows[1:]:
+            cells = re.findall(r"<td[^>]*>(.*?)</td>", row, re.S | re.I)
+            if len(cells) <= vcol:
+                continue
+            sym_m = re.search(r"<(?:b|strong)>(.*?)</(?:b|strong)>", cells[0], re.S | re.I)
+            symbol = _plain(sym_m.group(1)) if sym_m else _plain(cells[0]).split(" ")[0]
+            if not SYMBOL_RE.match(symbol):
+                continue
+            first = _plain(cells[0])
+            prices = RUPEE_RE.findall(cells[pcol] if pcol is not None and pcol < len(cells) else first)
+            vals = RUPEE_RE.findall(_plain(cells[vcol])) or re.findall(AMOUNT, _plain(cells[vcol]))
+            if not prices or not vals:
+                continue
+            price, value = _num(prices[-1]), _num(vals[0])
+            if price <= 0 or value <= 0:
+                continue
+            q = QTY_RE.search(first)
+            qty = float(q.group(1)) if q else round(value / price)
+            if qty > 0:
+                out[symbol] = (qty, price)
+        if out:
+            return out
+    return None
+
+
+def parse(email: dict) -> dict:
+    head = headline(email)
+    hold = holdings_from_state(email) or holdings_from_table(email.get("html", ""))
+    if hold and head:
+        total = sum(q * p for q, p in hold.values())
+        if abs(total / head[0] - 1) > RECONCILE_TOL:
+            hold = None  # table didn't reconcile with the headline; don't trust it
+    return {"head": head, "hold": hold}
 
 
 def price_date(ts: str) -> date:
@@ -126,28 +193,42 @@ def close_on(closes: dict[date, float], d: date) -> float | None:
     return closes[max(eligible)] if eligible else None
 
 
+def day_return(prev: dict, cur: dict) -> tuple[float | None, str]:
+    a, b = prev["hold"], cur["hold"]
+    if a and b:
+        common = [s for s in a if s in b]
+        base = sum(a[s][0] * a[s][1] for s in common)
+        if base > 0:
+            return sum(a[s][0] * (b[s][1] - a[s][1]) for s in common) / base, "holdings"
+    pa, pb = prev["head"], cur["head"]
+    if pa and pb and abs(pb[1] - pa[1]) < 1:  # no trades: value change is the return
+        return pb[0] / pa[0] - 1, "headline"
+    return None, "unresolved"
+
+
 def build(emails: list[dict]) -> dict:
     # Latest email per price date wins: re-runs and weekend runs carry corrections.
-    by_day: dict[date, tuple[str, float, float]] = {}
-    skipped = 0
+    by_day: dict[date, dict] = {}
+    unparsed = 0
     for e in sorted(emails, key=lambda e: e["timestamp"]):
-        vc = value_and_cost(e)
-        if vc is None:
-            skipped += 1
+        p = parse(e)
+        if not p["hold"] and not p["head"]:
+            unparsed += 1
             continue
-        by_day[price_date(e["timestamp"])] = (e["timestamp"], *vc)
+        by_day[price_date(e["timestamp"])] = {**p, "ts": e["timestamp"]}
     days = sorted(by_day)
     if len(days) < 2:
-        raise SystemExit(f"Not enough parsable reviews ({len(days)} usable, {skipped} skipped).")
+        raise SystemExit(f"Not enough parsable reviews ({len(days)} usable, {unparsed} unparsed).")
 
     index, rets, cums = 1.0, [0.0], [0.0]
-    outliers = 0
+    stats = {"holdings": 0, "headline": 0, "unresolved": 0, "outliers": 0}
     for prev, cur in zip(days, days[1:]):
-        _, v0, c0 = by_day[prev]
-        _, v1, c1 = by_day[cur]
-        r = (v1 - (c1 - c0)) / v0 - 1
-        if abs(r) > MAX_DAILY_MOVE:
-            outliers += 1
+        r, how = day_return(by_day[prev], by_day[cur])
+        stats[how] += 1
+        if r is None:
+            r = 0.0
+        elif abs(r) > MAX_DAILY_MOVE:
+            stats["outliers"] += 1
             r = 0.0
         index *= 1 + r
         rets.append(r)
@@ -169,7 +250,7 @@ def build(emails: list[dict]) -> dict:
         series.append(point)
 
     out = {
-        "updated": by_day[days[-1]][0],
+        "updated": by_day[days[-1]]["ts"],
         "as_of": days[-1].isoformat(),
         "inception": days[0].strftime("%b %Y"),
         "cumulative_pct": series[-1]["cum"],
@@ -179,9 +260,11 @@ def build(emails: list[dict]) -> dict:
     }
     if bench[-1] is not None:
         out["benchmark_cumulative_pct"] = series[-1]["bench"]
+    with_holdings = sum(1 for d in days if by_day[d]["hold"])
     print(
-        f"reviews={len(emails)} days={len(days)} skipped={skipped} outliers={outliers} "
-        f"cum={out['cumulative_pct']:+.2f}% today={out['today_pct']:+.2f}% "
+        f"reviews={len(emails)} days={len(days)} unparsed={unparsed} days_with_holdings={with_holdings} "
+        f"returns: holdings={stats['holdings']} headline={stats['headline']} unresolved={stats['unresolved']} "
+        f"outliers={stats['outliers']} cum={out['cumulative_pct']:+.2f}% today={out['today_pct']:+.2f}% "
         f"bench={out.get('benchmark_cumulative_pct', 'n/a')}"
     )
     return out
