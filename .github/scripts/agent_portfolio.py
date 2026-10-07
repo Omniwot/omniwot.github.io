@@ -147,8 +147,11 @@ def holdings_from_table(html: str) -> dict[str, tuple[float, float]] | None:
             price, value = _num(prices[-1]), _num(vals[0])
             if price <= 0 or value <= 0:
                 continue
-            q = QTY_RE.search(first)
-            qty = float(q.group(1)) if q else round(value / price)
+            # An explicit "N sh" / "N @" wins only if it agrees with value / price:
+            # action notes in the same cell ("sell 4 sh") must not become the quantity.
+            implied = round(value / price)
+            explicit = [int(n) for n in QTY_RE.findall(first)]
+            qty = next((float(n) for n in explicit if implied and abs(n / implied - 1) < 0.02), float(implied))
             if qty > 0:
                 out[symbol] = (qty, price)
         if out:
