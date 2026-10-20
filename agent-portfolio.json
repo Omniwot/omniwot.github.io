@@ -1,6 +1,6 @@
 {
- "updated": "2026-10-19T01:17:17.045Z",
- "as_of": "2026-10-16",
+ "updated": "2026-10-20T01:19:02.289Z",
+ "as_of": "2026-10-19",
  "inception": "Jul 2026",
  "cumulative_pct": -2.33,
  "today_pct": 0.0,
@@ -385,7 +385,12 @@
    "d": "2026-10-16",
    "cum": -2.33,
    "bench": -4.26
+  },
+  {
+   "d": "2026-10-19",
+   "cum": -2.33,
+   "bench": -5.32
   }
  ],
- "benchmark_cumulative_pct": -4.26
+ "benchmark_cumulative_pct": -5.32
 }
