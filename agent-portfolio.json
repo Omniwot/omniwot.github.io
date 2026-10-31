@@ -1,9 +1,9 @@
 {
- "updated": "2026-10-29T01:18:13.698Z",
- "as_of": "2026-10-28",
+ "updated": "2026-10-31T01:19:06.040Z",
+ "as_of": "2026-10-30",
  "inception": "Jul 2026",
- "cumulative_pct": -8.15,
- "today_pct": 0.0,
+ "cumulative_pct": -8.89,
+ "today_pct": -0.82,
  "benchmark_label": "Nifty 50",
  "series": [
   {
@@ -425,7 +425,12 @@
    "d": "2026-10-28",
    "cum": -8.15,
    "bench": -6.11
+  },
+  {
+   "d": "2026-10-30",
+   "cum": -8.89,
+   "bench": -4.64
   }
  ],
- "benchmark_cumulative_pct": -6.11
+ "benchmark_cumulative_pct": -4.64
 }
